@@ -1,0 +1,28 @@
+# Install
+
+## Players (release zip)
+
+1. Have HellForge installed (folder with `HellForge.exe`, `app\`, `game\`).
+2. Download the latest `HellForge-LocalCoop_v*.zip` from Releases.
+3. Quit Helldivers / HellForge / LocalBackend.
+4. Run `INSTALL.cmd`.
+5. Prefer `HellForge-Portable.cmd` when you use Steam AppId **480** for the backend peer link.
+
+### What gets replaced
+
+- `app\backend\HellForge.LocalBackend.real.exe` — patched LocalBackend  
+- `app\backend\HellForge.LocalBackend.exe` — small wrapper (created if you still have a stock single-exe layout)  
+- `app\backend\steam_api64.spacewar.dll` — used by the wrapper for steam-link  
+- `app\sdk-shims\PartyWin.dll` — voice-capable Party stand-in  
+- hashes in `app\sdk-shims\build.json` and `app\engine.json`  
+- optional `app\scripts\skip-steam-check.enabled` + ownership script for portable installs  
+
+Backups land in `app\backend\backups\party-voice-*` (historical folder name).
+
+### Squad rule
+
+Everyone in the lobby must run the **same** patch version (same backend + PartyWin pair).
+
+## Developers
+
+See the root README for `Invoke-CiTests.ps1` and overlay sync.

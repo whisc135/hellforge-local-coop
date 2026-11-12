@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v21). Creates the tag if missing."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: validate
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate installer / FEATURES / lock
+        shell: pwsh
+        run: ./scripts/Invoke-Validate.ps1
+
+  test:
+    name: test
+    runs-on: windows-latest
+    needs: validate
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache HellForge upstream clone
+        uses: actions/cache@v4
+        with:
+          path: .upstream
+          key: hellforge-${{ hashFiles('UPSTREAM.lock') }}
+          restore-keys: |
+            hellforge-
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run LocalBackend tests
+        shell: pwsh
+        run: ./scripts/Invoke-CiTests.ps1 -KeepUpstream
+
+  release:
+    name: release
+    runs-on: windows-latest
+    needs: [validate, test]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $v = '${{ inputs.version }}'.Trim()
+          } else {
+            $v = $env:GITHUB_REF_NAME
+          }
+          if ($v -notmatch '^v\d+') { throw "Version must look like v21 (got: $v)" }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Release version $v"
+
+      - name: Cache HellForge upstream clone
+        uses: actions/cache@v4
+        with:
+          path: .upstream
+          key: hellforge-${{ hashFiles('UPSTREAM.lock') }}
+          restore-keys: |
+            hellforge-
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Prepare HellForge + overlay
+        shell: pwsh
+        run: ./scripts/Invoke-CiTests.ps1 -KeepUpstream -SkipTests
+
+      - name: Fetch PartyWin + Spacewar from prior release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $this = '${{ steps.ver.outputs.version }}'
+          $tags = gh release list -L 20 --json tagName -q '.[].tagName'
+          $prior = ($tags | Where-Object { $_ -ne $this } | Select-Object -First 1)
+          if (-not $prior) { throw "No prior GitHub Release to pull PartyWin/spacewar from." }
+          Write-Host "Using binaries from release $prior"
+          New-Item -ItemType Directory -Force -Path prev, payload | Out-Null
+          gh release download $prior -p 'HellForge-LocalCoop_*.zip' -D prev --clobber
+          $zip = Get-ChildItem prev -Filter 'HellForge-LocalCoop_*.zip' | Select-Object -First 1
+          if (-not $zip) { throw "Prior release zip missing" }
+          Expand-Archive $zip.FullName -DestinationPath prev\unpack -Force
+          Copy-Item prev\unpack\PartyWin.dll payload\ -Force
+          Copy-Item prev\unpack\steam_api64.spacewar.dll payload\ -Force
+
+      - name: Publish LocalBackend (NativeAOT)
+        shell: pwsh
+        run: |
+          $proj = Join-Path $PWD '.upstream\HellForge\src\HellForge.LocalBackend\HellForge.LocalBackend.csproj'
+          if (-not (Test-Path $proj)) { throw "Missing $proj — prepare step failed" }
+          $out = Join-Path $PWD 'publish-backend'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          dotnet publish $proj -c Release -r win-x64 --self-contained true -o $out `
+            -p:NuGetAudit=false -p:PublishAot=true
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
+          $exe = Join-Path $out 'HellForge.LocalBackend.exe'
+          if (-not (Test-Path $exe)) { throw "Publish output missing HellForge.LocalBackend.exe" }
+          Copy-Item $exe payload\HellForge.LocalBackend.real.exe -Force
+
+      - name: Compile wrapper
+        shell: pwsh
+        run: |
+          $src = Join-Path $PWD 'src\wrapper\HellForgeBackendWrapper.cs'
+          $out = Join-Path $PWD 'payload\HellForge.LocalBackend.wrapper.exe'
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc" }
+          & $csc /nologo /optimize+ /target:exe /out:$out $src
+          if ($LASTEXITCODE -ne 0) { throw "csc failed: $LASTEXITCODE" }
+
+      - name: Pack release zip
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          ./scripts/Build-ReleaseZip.ps1 -PayloadDir .\payload -Version $v -OutDir .\artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          $zip = Get-ChildItem artifacts -Filter "HellForge-LocalCoop_$v.zip" | Select-Object -First 1
+          $sum = Get-ChildItem artifacts -Filter "HellForge-LocalCoop_$v.zip.sha256" | Select-Object -First 1
+          if (-not $zip) { throw "Zip missing" }
+          $notes = @"
+          HellForge Local Co-op **$v**
+
+          1. Close the game and HellForge.
+          2. Run ``INSTALL.cmd`` from the zip (pick the HellForge folder if asked).
+          3. Prefer ``HellForge-Portable.cmd`` for Spacewar peer-link.
+          4. Same **$v** on every squad PC.
+
+          SHA-256 of the zip is in the ``.sha256`` asset. Installer pins for the four binaries are rewritten into ``Apply-LocalCoop.ps1`` at pack time.
+          "@
+          $remoteTag = git ls-remote --tags origin "refs/tags/$v"
+          if (-not $remoteTag) {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag $v
+            git push origin $v
+          }
+          gh release create $v $zip.FullName $sum.FullName --title "HellForge Local Co-op $v" --notes $notes

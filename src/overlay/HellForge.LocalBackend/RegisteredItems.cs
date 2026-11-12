@@ -1,0 +1,398 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace HellForge.LocalBackend;
+
+// Weapons code mods register with the HellForge weapon registry (native/mod-loader/registry.c) for this session: the mod
+// loader writes <session>/registered-items.json ({"items":[{"mixId","copyOf"}]}) as mods register them, and the
+// game's progression data then carries each one as a copy of its base weapon:
+//   /Progression/items        the base's catalogue entry under the new id, followed by copies of the base's children
+//                             (attachments and other customizations);
+//   /Progression/ProgressionPackages  a copy of the base's weapon mastery package (type 2) for the new weapon;
+//   /Progression              progress in that package: the profile's own entry if it has one, else the base's;
+//   /Progression/inventory    the weapon, and the copy of every child of the base the player holds.
+// A weapon's children are its own items: a child's itemId is the attachment and its mixId WeaponChild(attachment,
+// weapon), the hash the armory's customization screen recomputes from the attachment and the weapon (game.dll
+// 0x1493770); the attachment list (0x1370420) matches a child's itemId to the attachment and its parent's itemId to
+// the weapon. So the base's children are copied with the same itemId and the mixId re-hashed under the new weapon. A weapon without its own children and mastery package crashed that screen.
+// Stratagems code mods add (native/mod-loader/stratagems.c) are entries {"kind":"stratagem","mixId","stable","copyOf"}:
+// a stratagem is a catalogue item (progressionCategory 11) with one child (10) whose itemId is the stratagem's stable id
+// (StratagemInfo +4, what the loadout checks and saves) and whose mixId is WeaponChild(stable id, item). The base's two
+// items (found by its stable id, copyOf) are copied under the new ids, so the new one has the base's level, price and
+// traits; the inventory holds the item. copyOf is 0 until the game has loaded its stratagems, and such entries wait.
+// A difficulty a mod adds (native/mod-loader/difficulty.c) is {"kind":"difficulty","mixId","copyOf"}: its unlock item,
+// a copy of level 10's (copyOf); the inventory holds it only when it holds level 10's, so it unlocks with Super Helldive.
+// /Configuration/GameClient carries the live game's cap on the difficulty level (online override 48726272, an int, "10";
+// game.dll 0x11EBB40 returns min(its own maximum, the cap)): it is raised to the level the mod added.
+// Nothing is saved to the profile, so a removed mod leaves nothing behind.
+// Premium content (docs/modding/concepts.md "Premium content"): a weapon or stratagem copied from content the player does
+// not own (OwnsBase: OwnershipFilter's rules), or registered by a mod whose declared premium list the player does not own
+// (LockedMods, from mods-stage), stays out of /Progression/inventory: the game knows it, the player cannot equip it.
+public sealed class RegisteredItems(string path)
+{
+    public sealed record Item(uint MixId, uint CopyOf, uint Stable = 0, bool IsDifficulty = false, uint Level = 0, string Mod = "")
+    {
+        public bool IsStratagem => Stable != 0;
+        // Weapons: the items with children, mastery packages and progress of their own.
+        public bool IsWeapon => !IsStratagem && !IsDifficulty;
+    }
+
+    const uint M = 0x5BD1E995;
+    // The online override capping the difficulty level (its mixId: the client's hash of keys AF218CAC, FAABBEA9).
+    public const uint DifficultyCapOverride = 48726272;
+    static readonly uint InverseM = Inverse(M);
+
+    // Responses the copies are made from (the backend's startup bodies), set by LocalBackend.
+    public Func<string, JsonElement?>? Source { get; set; }
+
+    // Where the mod loader writes them: the game's log folder, which is the session's run (the backend evidence folder's
+    // parent) or, sandboxed, the run's game folder, the one the game may write (PlaySession's gameOut). Read from the run,
+    // a sandboxed session lost them all: mods' weapons and stratagems, level 11 and the raised difficulty cap.
+    public static string PathFor(string evidence, bool sandboxed)
+    {
+        var run = Path.GetDirectoryName(Path.GetFullPath(evidence))!;
+        return Path.Combine(sandboxed ? Path.Combine(run, "game") : run, "registered-items.json");
+    }
+
+    // Whether the player may hold a base item; null: every base (no premium rules, as in tests and the development backend).
+    public Func<uint, bool>? OwnsBase { get; set; }
+
+    // Mods whose items stay out of the player's inventory (mods-stage's --premium-locked).
+    public IReadOnlySet<string> LockedMods { get; set; } = new HashSet<string>();
+
+    public IReadOnlyList<Item> Load()
+    {
+        try
+        {
+            if (!File.Exists(path)) return [];
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var document = JsonDocument.Parse(stream);
+            List<Item> items = [];
+            foreach (var item in document.RootElement.GetProperty("items").EnumerateArray())
+                if (Read(item) is { } registered) items.Add(registered);
+            return items;
+        }
+        catch (Exception error) when (error is IOException or JsonException or KeyNotFoundException or InvalidOperationException) { return []; }
+    }
+
+    // One entry of the file: a weapon, a stratagem or a difficulty, or null for one that is malformed or waits (copyOf 0).
+    static Item? Read(JsonElement item)
+    {
+        if (!item.TryGetProperty("mixId", out var id) || !id.TryGetUInt32(out var mixId) || mixId == 0 ||
+            !item.TryGetProperty("copyOf", out var copy) || !copy.TryGetUInt32(out var copyOf))
+            return null;
+        if (item.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "stratagem")
+            return copyOf != 0 && item.TryGetProperty("stable", out var stable) && stable.TryGetUInt32(out var stableId) && stableId != 0
+                ? new Item(mixId, copyOf, stableId, Mod: ModOf(item)) : null;
+        if (item.TryGetProperty("kind", out kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "difficulty")
+            return copyOf != 0 && item.TryGetProperty("level", out var level) && level.TryGetUInt32(out var levelValue) && levelValue is > 10 and <= 15
+                ? new Item(mixId, copyOf, IsDifficulty: true, Level: levelValue, Mod: ModOf(item)) : null;
+        return new Item(mixId, copyOf, Mod: ModOf(item));
+    }
+
+    // The id of a weapon's child item (an attachment's id for that weapon), as the client computes it.
+    public static uint WeaponChild(uint attachment, uint weapon)
+    {
+        var k = attachment * M;
+        k ^= k >> 24;
+        return (k * M) ^ (weapon * M);
+    }
+
+    // The attachment a weapon's child item stands for (WeaponChild inverted).
+    public static uint Attachment(uint child, uint weapon)
+    {
+        var k = (child ^ (weapon * M)) * InverseM;
+        k ^= k >> 24;
+        return k * InverseM;
+    }
+
+    // A base child's id under the new weapon.
+    public static uint Rehome(uint child, uint from, uint to) => WeaponChild(Attachment(child, from), to);
+
+    // The id of the new weapon's mastery package.
+    public static uint PackageFor(uint basePackage, uint from, uint to) => Rehome(basePackage, from, to);
+
+    // What the game keeps (build 25480438; research\catalogue-cap): the first 4,096 /Progression/items (game.dll+0x107EA50
+    // `mov eax,0x1000; cmp; cmovb` caps the parse, into a buffer of 4,096 records, +0x12CA837), the first 4,096 inventory
+    // entries (+0x103927B) and the first 256 progression packages (+0x1080093). The rest is dropped, unsaid: with 64
+    // Liberator copies (6,573 items) the cut fell inside the 21st copy, and every mod stratagem after it was lost.
+    public const int CatalogueCap = 4096, InventoryCap = 4096, PackageCap = 256;
+
+    // The order the items are added in: difficulties and stratagems (one or two catalogue items each) before weapons (the
+    // base's item and every one of its children: 57 for the AR-23 Liberator), each kind in the order mods registered it.
+    // Weapons register as mods load and stratagems only once the game has loaded its own, so in registration order a large
+    // weapon pack pushed out every stratagem and level 11; in this order, only its last weapons.
+    public static IReadOnlyList<Item> Prioritized(IReadOnlyList<Item> items) =>
+        [.. items.OrderBy(i => i.IsDifficulty ? 0 : i.IsStratagem ? 1 : 2)];
+
+    // Where a line goes when a registered item does not fit (the backend's log); each item is reported once.
+    public Action<string> Log { get; set; } = line => Console.Error.WriteLine("[registered items] " + line);
+    readonly HashSet<uint> reported = [];
+
+    // The items that fit the game's catalogue and packages whole, in priority order (Prioritized): a weapon with every one of
+    // its base's children and its mastery package, or not at all, never cut through. Without the vanilla catalogue to count
+    // (Source), every item.
+    public IReadOnlyList<Item> Admitted(IReadOnlyList<Item> items)
+    {
+        if (Source?.Invoke("/Progression/items") is not { ValueKind: JsonValueKind.Array } catalogue) return items;
+        var children = ChildCounts(catalogue);
+        var packages = Source("/Progression/ProgressionPackages") is { ValueKind: JsonValueKind.Array } p ? (JsonArray)JsonNode.Parse(p.GetRawText())! : [];
+        int room = CatalogueCap - catalogue.GetArrayLength(), packageRoom = PackageCap - packages.Count;
+        var admitted = new List<Item>();
+        foreach (var item in items)
+        {
+            var cost = item.IsStratagem ? 2 : 1 + children.GetValueOrDefault(item.CopyOf);
+            var package = item.IsWeapon && MasteryPackage(packages, item.CopyOf) != null ? 1 : 0;
+            if (cost <= room && package <= packageRoom)
+            {
+                (room, packageRoom) = (room - cost, packageRoom - package);
+                admitted.Add(item);
+            }
+            else Report(item, cost > room ? $"the game keeps {CatalogueCap} catalogue items, and it needs {cost} more where {room} are left"
+                : $"the game keeps {PackageCap} progression packages, and none is left for its mastery package");
+        }
+        return admitted;
+    }
+
+    // How many children each catalogue item has: what a copy of it adds besides itself.
+    static Dictionary<uint, int> ChildCounts(JsonElement catalogue)
+    {
+        var children = new Dictionary<uint, int>();
+        foreach (var entry in catalogue.EnumerateArray())
+            if (entry.TryGetProperty("parentId", out var parent) && parent.TryGetUInt32(out var parentId))
+                children[parentId] = children.GetValueOrDefault(parentId) + 1;
+        return children;
+    }
+
+    void Report(Item item, string why)
+    {
+        lock (reported)
+            if (!reported.Add(item.MixId)) return;
+        var kind = item.IsDifficulty ? "difficulty" : item.IsStratagem ? "stratagem" : "weapon";
+        Log($"{(item.Mod.Length > 0 ? item.Mod + "'s " : "")}{kind} {item.MixId} is left out: {why}.");
+    }
+
+    // The response body for a startup path, with the registered items added where they belong.
+    public JsonElement Apply(string path, JsonElement body)
+    {
+        if (path is not ("/Progression/items" or "/Progression/inventory" or "/Progression/ProgressionPackages" or "/Progression" or
+            "/Configuration/GameClient"))
+            return body;
+        var items = Admitted(Prioritized(Load()));
+        if (items.Count == 0) return body;
+        var node = JsonNode.Parse(body.GetRawText());
+        switch (path)
+        {
+            case "/Progression/items" when node is JsonArray catalogue:
+                AddCatalogue(catalogue, items);
+                break;
+            case "/Progression/ProgressionPackages" when node is JsonArray packages:
+                AddPackages(packages, items);
+                break;
+            case "/Progression" when node is JsonObject progression:
+                AddProgress(progression, items);
+                break;
+            case "/Progression/inventory" when node is JsonObject inventory && inventory["items"] is JsonArray held:
+                AddInventory(held, items);
+                break;
+            case "/Configuration/GameClient" when node is JsonObject client && items.Any(i => i.IsDifficulty):
+                RaiseDifficultyCap(client, items.Where(i => i.IsDifficulty).Max(i => i.Level));
+                break;
+            default:
+                return body;
+        }
+        using var document = JsonDocument.Parse(node!.ToJsonString());
+        return document.RootElement.Clone();
+    }
+
+    // A uint field, however its node was made (a JsonValue made from a uint does not convert to long).
+    static uint? Id(JsonNode? node, string name) =>
+        node is JsonObject o && o[name] is JsonValue v && v.GetValueKind() == JsonValueKind.Number &&
+        uint.TryParse(v.ToJsonString(), out var id) ? id : null;
+
+    static void AddCatalogue(JsonArray catalogue, IReadOnlyList<Item> items)
+    {
+        var known = catalogue.Select(i => Id(i, "mixId")).ToHashSet();
+        foreach (var item in items)
+        {
+            if (known.Contains(item.MixId)) continue;
+            if (item.IsStratagem)
+            {
+                AddStratagem(catalogue, item, known);
+                continue;
+            }
+            var source = catalogue.OfType<JsonObject>().FirstOrDefault(i => Id(i, "mixId") == item.CopyOf && i["parentId"] == null);
+            if (source == null) continue;
+            var copy = source.DeepClone().AsObject();
+            copy["itemId"] = item.MixId;
+            copy["mixId"] = item.MixId;
+            catalogue.Add((JsonNode?)copy);
+            // Its children right after it: the client links a child to the preceding parent run.
+            foreach (var child in catalogue.OfType<JsonObject>().Where(i => Id(i, "parentId") == item.CopyOf).ToList())
+            {
+                var mixId = Rehome(Id(child, "mixId")!.Value, item.CopyOf, item.MixId);
+                if (!known.Add(mixId)) continue;
+                var childCopy = child.DeepClone().AsObject(); // itemId: the same attachment
+                childCopy["mixId"] = mixId;
+                childCopy["parentId"] = item.MixId;
+                catalogue.Add((JsonNode?)childCopy);
+            }
+            known.Add(item.MixId);
+        }
+    }
+
+    // A stratagem's item and its child, copied from its base's.
+    static void AddStratagem(JsonArray catalogue, Item item, HashSet<uint?> known)
+    {
+        var baseChild = catalogue.OfType<JsonObject>().FirstOrDefault(i => Id(i, "progressionCategory") == 10 && Id(i, "itemId") == item.CopyOf);
+        var baseItem = baseChild == null ? null : catalogue.OfType<JsonObject>().FirstOrDefault(i => Id(i, "mixId") == Id(baseChild, "parentId"));
+        if (baseChild == null || baseItem == null) return;
+        var copy = baseItem.DeepClone().AsObject();
+        copy["itemId"] = item.MixId;
+        copy["mixId"] = item.MixId;
+        catalogue.Add((JsonNode?)copy);
+        var child = baseChild.DeepClone().AsObject();
+        child["itemId"] = item.Stable;
+        child["parentId"] = item.MixId;
+        child["mixId"] = WeaponChild(item.Stable, item.MixId);
+        catalogue.Add((JsonNode?)child);
+        known.Add(item.MixId);
+        known.Add(WeaponChild(item.Stable, item.MixId));
+    }
+
+    static JsonObject? MasteryPackage(JsonArray packages, uint weapon) =>
+        packages.OfType<JsonObject>().FirstOrDefault(p => Id(p, "type") == 2 &&
+            p["requiredItems"] is JsonArray required && required.Any(r => r is JsonValue v && uint.TryParse(v.ToJsonString(), out var id) && id == weapon));
+
+    void AddPackages(JsonArray packages, IReadOnlyList<Item> items)
+    {
+        var children = ChildIds();
+        foreach (var item in items.Where(i => i.IsWeapon))
+        {
+            var source = MasteryPackage(packages, item.CopyOf);
+            if (source == null || MasteryPackage(packages, item.MixId) != null) continue;
+            var copy = source.DeepClone().AsObject();
+            copy["id32"] = PackageFor(Id(source, "id32")!.Value, item.CopyOf, item.MixId);
+            copy["requiredItems"] = new JsonArray(item.MixId);
+            RehomeLevels(copy, children, item);
+            packages.Add((JsonNode?)copy);
+        }
+    }
+
+    // A copied mastery package's rewards and unlocks that are the base's children become the new weapon's.
+    static void RehomeLevels(JsonObject package, Dictionary<uint, uint> children, Item item)
+    {
+        uint Map(uint id) => children.TryGetValue(id, out var parent) && parent == item.CopyOf ? Rehome(id, item.CopyOf, item.MixId) : id;
+        foreach (var level in (package["levels"] as JsonArray ?? []).OfType<JsonObject>())
+        {
+            foreach (var reward in (level["rewards"] as JsonArray ?? []).OfType<JsonObject>())
+                if (Id(reward, "type") == 1 && Id(reward, "id32") is { } id) reward["id32"] = Map(id);
+            foreach (var unlock in (level["unlockableItems"] as JsonArray ?? []).OfType<JsonObject>())
+                if (Id(unlock, "mixId") is { } id) unlock["mixId"] = Map(id);
+        }
+    }
+
+    void AddProgress(JsonObject progression, IReadOnlyList<Item> items)
+    {
+        if (progression["packageProgress"] is not JsonArray progress || Source?.Invoke("/Progression/ProgressionPackages") is not { } body) return;
+        var packages = (JsonArray)JsonNode.Parse(body.GetRawText())!;
+        var entries = progress.OfType<JsonObject>().ToDictionary(e => Id(e, "id32") ?? 0, e => e);
+        foreach (var item in items.Where(i => i.IsWeapon))
+        {
+            if (MasteryPackage(packages, item.CopyOf) is not { } source) continue;
+            var basePackage = Id(source, "id32")!.Value;
+            var own = PackageFor(basePackage, item.CopyOf, item.MixId);
+            if (entries.ContainsKey(own) || !entries.TryGetValue(basePackage, out var baseEntry)) continue;
+            var copy = baseEntry.DeepClone().AsObject();
+            copy["id32"] = own;
+            progress.Add((JsonNode?)copy);
+            entries[own] = copy;
+        }
+    }
+
+    // Each item with its copies of the held children, while the game's 4,096 inventory entries (InventoryCap) hold all of
+    // them: past that the game ignores the rest, and a weapon would be held without its attachments.
+    void AddInventory(JsonArray held, IReadOnlyList<Item> items)
+    {
+        var have = held.Select(i => Id(i, "mixId")).ToHashSet();
+        var children = ChildIds();
+        foreach (var item in items.Where(i => !Locked(i)))
+        {
+            if (item.IsDifficulty && !have.Contains(item.CopyOf)) continue; /* not before level 10 is unlocked */
+            var entries = (have.Contains(item.MixId) ? 0 : 1) +
+                (item.IsWeapon ? held.Count(e => Id(e, "mixId") is { } id && children.TryGetValue(id, out var parent) && parent == item.CopyOf) : 0);
+            if (held.Count + entries > InventoryCap)
+            {
+                Report(item, $"the game keeps {InventoryCap} inventory entries, and it needs {entries} more where {InventoryCap - held.Count} are left");
+                continue;
+            }
+            if (have.Add(item.MixId)) held.Add((JsonNode?)new JsonObject { ["mixId"] = item.MixId, ["amount"] = 1, ["isDiscovered"] = true });
+            if (item.IsWeapon) AddChildren(held, have, children, item);
+        }
+    }
+
+    // The mod that registered an entry (registry.c writes its id).
+    static string ModOf(JsonElement item) => item.TryGetProperty("mod", out var owner) && owner.ValueKind == JsonValueKind.String ? owner.GetString()! : "";
+
+    // A premium mod the player does not own, or a copy of a premium base they do not own; a stratagem whose base cannot be
+    // found yet stays out too, until the game has loaded its stratagems.
+    bool Locked(Item item)
+    {
+        if (LockedMods.Contains(item.Mod)) return true;
+        if (OwnsBase == null || item.IsDifficulty) return false;
+        return BaseItem(item) is not { } baseItem || !OwnsBase(baseItem);
+    }
+
+    // The base's own item: a weapon's is copyOf; a stratagem's is the parent of the catalogue child whose itemId is its stable id.
+    uint? BaseItem(Item item)
+    {
+        if (!item.IsStratagem) return item.CopyOf;
+        if (Source?.Invoke("/Progression/items") is not { ValueKind: JsonValueKind.Array } catalogue) return null;
+        foreach (var entry in catalogue.EnumerateArray())
+            if (entry.TryGetProperty("progressionCategory", out var category) && category.TryGetInt32(out var kind) && kind == 10 &&
+                entry.TryGetProperty("itemId", out var itemId) && itemId.TryGetUInt32(out var stable) && stable == item.CopyOf &&
+                entry.TryGetProperty("parentId", out var parent) && parent.TryGetUInt32(out var parentId))
+                return parentId;
+        return null;
+    }
+
+    // The copy of every child of a weapon's base the inventory holds.
+    static void AddChildren(JsonArray held, HashSet<uint?> have, Dictionary<uint, uint> children, Item item)
+    {
+        foreach (var entry in held.OfType<JsonObject>().ToList())
+            if (Id(entry, "mixId") is { } id && children.TryGetValue(id, out var parent) && parent == item.CopyOf)
+            {
+                var mixId = Rehome(id, item.CopyOf, item.MixId);
+                if (!have.Add(mixId)) continue;
+                var copy = entry.DeepClone().AsObject();
+                copy["mixId"] = mixId;
+                held.Add((JsonNode?)copy);
+            }
+    }
+
+    static void RaiseDifficultyCap(JsonObject client, uint level)
+    {
+        if (client["onlineOverrideConfiguration"] is not JsonArray overrides) return;
+        foreach (var entry in overrides.OfType<JsonObject>().Where(o => Id(o, "mixId") == DifficultyCapOverride && Id(o, "dataType") == 6))
+            if (int.TryParse(entry["data"]?.GetValue<string>(), out var cap) && cap < level) entry["data"] = level.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // Catalogue children: child id -> parent id.
+    Dictionary<uint, uint> ChildIds()
+    {
+        Dictionary<uint, uint> children = [];
+        if (Source?.Invoke("/Progression/items") is not { ValueKind: JsonValueKind.Array } catalogue) return children;
+        foreach (var item in catalogue.EnumerateArray())
+            if (item.TryGetProperty("parentId", out var parent) && parent.TryGetUInt32(out var parentId) &&
+                item.TryGetProperty("mixId", out var mix) && mix.TryGetUInt32(out var mixId))
+                children[mixId] = parentId;
+        return children;
+    }
+
+    static uint Inverse(uint a)
+    {
+        uint x = a; // Newton's iteration for the inverse modulo 2^32 (a odd)
+        for (var i = 0; i < 5; i++) x *= 2 - a * x;
+        return x;
+    }
+}

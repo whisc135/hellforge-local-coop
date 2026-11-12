@@ -1,0 +1,71 @@
+﻿HellForge Local Co-op — build features
+======================================
+Canonical copy: FEATURES.txt in this repository
+Shipped inside each HellForge-LocalCoop_vN.zip as FEATURES.txt
+When cutting a new build: update “Current” and add a version block at the top of History.
+
+Archive: HellForge-LocalCoop_vN.zip
+
+Current: v20
+------------
+Backend (exe): same as v19
+  SHA256 HellForge.LocalBackend.real.exe =
+    3CC72BC7EDA3F70160821A95D3CEE108114B32134A19696FD476A9D4FE6FEF23
+PartyWin (voice stand-in): same as v12+
+  SHA256 PartyWin.dll =
+    5F1012F8EB3A285ECABFABD6C618EC54769732CF342447F5B8DF36CA486A6417
+Wrapper:
+  SHA256 HellForge.LocalBackend.wrapper.exe =
+    1D93A4290191ECB62176C7BF2970CEE5270EEA60C6CD35DA7DFC9F2D05E3F853
+
+Current backend behaviour
+  - Squad voice (PartyWin + LocalBackend party.voice; Opus/RNNoise)
+  - Mission XP Share: joiners get XP / medals / requisition via mission.ended
+  - Samples: extract pool for everyone who extracted (sum of extracted lootedItems)
+  - Weapon XP: progressedPackages → packageProgress on disk
+  - Mission/end: badges[] always empty (filled lists break parser 0x105e3e0)
+  - Mission/end: full progressionPackageUpdates snapshot (not a single package)
+  - Unattributed co-op Mission/end does not burn paidMissions with a zero payout
+  - Sample share: fall back to the host pool; log sample units
+  - Superstore: /StoreFront/rotation and /StoreFront/{id}; buys spend Forge Credits
+  - Pickup share: medal / requisition / Forge Credit piles in the lobby
+
+Installer (v20)
+  - Installs real + thin wrapper + steam_api64.spacewar.dll (Spacewar 480)
+  - On stock 0.2.0 (one large LocalBackend.exe) creates the real/wrapper split
+  - On portable 0.4 only refreshes the patched files
+  - skip-steam-check + HellForge-Portable.cmd
+  - Does not touch profiles\
+
+Limits
+  - GET /Progression once per session; joiner armory UI may lag until relaunch
+  - extracted:false → 0 samples even on success
+  - PartyWin pin in build.json must match original game\bin\PartyWin.dll for that HellForge build
+  - Everyone in the squad must run the same LocalCoop_vN
+
+History
+-------
+v20  (2026-11-12)
+  Installer: real/wrapper/Spacewar + voice on 0.2.0 stock and portable 0.4.
+  Backend same as v19.
+
+v19  (2026-11-12)
+  Do not burn paidMissions on an unattributed Mission/end.
+  progressionPackageUpdates = full packageProgress.
+  Share: do not send empty loot on a Peers miss; log sample units.
+
+v18  (2026-11-11)
+  Superstore stub + Forge Credits; RememberPaid.
+  Voice, XP share, sample pool, package updates in one AOT binary.
+
+v17  Mission/end → progressionPackageUpdates from packageProgress.
+v16  Samples: shared extract pool for the squad.
+v15  Samples/packages in mission.ended (personal pocket first).
+v14  badges[] always empty.
+v13  Echoing badges broke Mission/end (reverted in v14).
+v12  PartyWin voice (Opus/RNNoise); PartyWin hash stable since.
+
+How to update this file
+  1. Change “Current: vN” and SHAs when exe/dll change.
+  2. Add a vN block under History (1–5 lines: why, not a full diff).
+  3. Ship FEATURES.txt in the release zip.

@@ -1,0 +1,37 @@
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vs/
+.idea/
+*.user
+*.suo
+
+# Build
+bin/
+obj/
+artifacts/
+out/
+payload/
+*.pdb
+*.exe
+*.dll
+!install/*.cmd
+
+# Keep scripts; ignore accidental binary drops
+*.zip
+!docs/**
+
+# Local CI checkout
+.upstream/
+.tmp/
+
+# Secrets
+.env
+*.pfx
+*.pem
+
+.upstream/
+payload/
+artifacts/
+
