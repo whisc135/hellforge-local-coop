@@ -26,12 +26,17 @@ $required = @(
   'HellForge.LocalBackend.real.exe',
   'HellForge.LocalBackend.wrapper.exe',
   'PartyWin.dll',
-  'steam_api64.spacewar.dll'
+  'steam_api64.spacewar.dll',
+  'steam_api64.valve.dll'
 )
 $hashes = @{}
 foreach ($name in $required) {
   $p = Join-Path $PayloadDir $name
-  if (-not (Test-Path $p)) { throw "Payload missing $name" }
+  if (-not (Test-Path $p)) {
+    $fallback = Join-Path $RepoRoot "install\$name"
+    if (($name -eq 'steam_api64.valve.dll') -and (Test-Path $fallback)) { $p = $fallback }
+    else { throw "Payload missing $name" }
+  }
   Copy-Item $p (Join-Path $stage $name) -Force
   $hashes[$name] = (Get-FileHash -Algorithm SHA256 -Path $p).Hash
 }
@@ -41,6 +46,7 @@ $applySrc = [regex]::Replace($applySrc, "\`$expectExe = '[A-Fa-f0-9]{64}'", "`$e
 $applySrc = [regex]::Replace($applySrc, "\`$expectDll = '[A-Fa-f0-9]{64}'", "`$expectDll = '$($hashes['PartyWin.dll'])'")
 $applySrc = [regex]::Replace($applySrc, "\`$expectWrapper = '[A-Fa-f0-9]{64}'", "`$expectWrapper = '$($hashes['HellForge.LocalBackend.wrapper.exe'])'")
 $applySrc = [regex]::Replace($applySrc, "\`$expectSpacewar = '[A-Fa-f0-9]{64}'", "`$expectSpacewar = '$($hashes['steam_api64.spacewar.dll'])'")
+$applySrc = [regex]::Replace($applySrc, "\`$expectValve = '[A-Fa-f0-9]{64}'", "`$expectValve = '$($hashes['steam_api64.valve.dll'])'")
 $utf8bom = New-Object System.Text.UTF8Encoding $true
 [IO.File]::WriteAllText((Join-Path $stage 'Apply-LocalCoop.ps1'), $applySrc, $utf8bom)
 
@@ -54,6 +60,7 @@ $feat = [regex]::Replace($feat, '(?m)^(Current:\s*)v\d+',('${1}' + $Version))
 $feat = [regex]::Replace($feat, '(SHA256 HellForge\.LocalBackend\.real\.exe\s*=\s*\r?\n\s*)[A-Fa-f0-9]{64}',('${1}' + $hashes['HellForge.LocalBackend.real.exe']))
 $feat = [regex]::Replace($feat, '(SHA256 PartyWin\.dll\s*=\s*\r?\n\s*)[A-Fa-f0-9]{64}',('${1}' + $hashes['PartyWin.dll']))
 $feat = [regex]::Replace($feat, '(SHA256 HellForge\.LocalBackend\.wrapper\.exe\s*=\s*\r?\n\s*)[A-Fa-f0-9]{64}',('${1}' + $hashes['HellForge.LocalBackend.wrapper.exe']))
+$feat = [regex]::Replace($feat, '(SHA256 steam_api64\.valve\.dll\s*=\s*\r?\n\s*)[A-Fa-f0-9]{64}',('${1}' + $hashes['steam_api64.valve.dll']))
 [IO.File]::WriteAllText((Join-Path $stage 'FEATURES.txt'), $feat, $utf8bom)
 
 $how = @"

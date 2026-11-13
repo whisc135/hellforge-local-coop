@@ -25,7 +25,7 @@ Without this patch, HellForge’s LocalBackend often only sees `Mission/end` on 
 4. Prefer `HellForge-Portable.cmd` → PLAY when using the Spacewar (480) peer-link setup.
 5. **Same release on every machine** in the lobby.
 
-This zip only patches LocalBackend / PartyWin / Spacewar helpers. If you installed HellForge **0.2.0**, the UI will still show **0.2.0** after `INSTALL.cmd` — that is expected. To run **0.4**, update HellForge first, then apply the patch again.
+This zip only patches LocalBackend / PartyWin / Spacewar helpers (and repairs `game\bin\steam_api64.dll` if a crack/GSE DLL broke HellForge `gameCopy`). If you installed HellForge **0.2.0**, the UI will still show **0.2.0** after `INSTALL.cmd` — that is expected. To run **0.4**, update HellForge first, then apply the patch again.
 
 Installer backups go under `app\backend\backups\`. Profiles are not wiped.
 

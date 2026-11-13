@@ -17,6 +17,8 @@ payload/
 *.exe
 *.dll
 !install/*.cmd
+!install/*.dll
+!install/*.DLL
 !seed/*.dll
 !seed/*.DLL
 

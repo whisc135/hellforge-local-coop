@@ -11,6 +11,9 @@ $expectExe = '3CC72BC7EDA3F70160821A95D3CEE108114B32134A19696FD476A9D4FE6FEF23'
 $expectDll = '5F1012F8EB3A285ECABFABD6C618EC54769732CF342447F5B8DF36CA486A6417'
 $expectWrapper = '1D93A4290191ECB62176C7BF2970CEE5270EEA60C6CD35DA7DFC9F2D05E3F853'
 $expectSpacewar = '66F50AAB82AA728C16F9410F211CE53EF6264D9842BBB171A56AD4AC9C1571AC'
+# Valve steam_api64 for HELLDIVERS 2 build 25480438 (HellForge gameCopy). Not Spacewar / not GSE.
+$expectValve = '1DB3FD414039D3E5815A5721925DD2E0A3A9F2549603C6CAB7C49B84966A1AF3'
+$expectValveSize = 298384
 
 function Write-Step([string]$m) { Write-Host "[*] $m" -ForegroundColor Cyan }
 function Write-Ok([string]$m) { Write-Host "[+] $m" -ForegroundColor Green }
@@ -28,11 +31,12 @@ $patchExe = Join-Path $PSScriptRoot 'HellForge.LocalBackend.real.exe'
 $patchDll = Join-Path $PSScriptRoot 'PartyWin.dll'
 $patchWrapper = Join-Path $PSScriptRoot 'HellForge.LocalBackend.wrapper.exe'
 $patchSpacewar = Join-Path $PSScriptRoot 'steam_api64.spacewar.dll'
+$patchValve = Join-Path $PSScriptRoot 'steam_api64.valve.dll'
 $patchSkip = Join-Path $PSScriptRoot 'skip-steam-check.enabled'
 $patchOwnership = Join-Path $PSScriptRoot 'Test-SteamOwnership.ps1'
 $patchPortableCmd = Join-Path $PSScriptRoot 'HellForge-Portable.cmd'
 
-foreach ($need in @($patchExe, $patchDll, $patchWrapper, $patchSpacewar)) {
+foreach ($need in @($patchExe, $patchDll, $patchWrapper, $patchSpacewar, $patchValve)) {
   if (-not (Test-Path $need)) {
     throw "Patch files are missing next to this script. Unzip the archive fully and run Apply-LocalCoop.ps1 from that folder."
   }
@@ -41,6 +45,7 @@ if ((Get-Sha256 $patchExe) -ne $expectExe) { throw "HellForge.LocalBackend.real.
 if ((Get-Sha256 $patchDll) -ne $expectDll) { throw "PartyWin.dll in the archive is damaged." }
 if ((Get-Sha256 $patchWrapper) -ne $expectWrapper) { throw "HellForge.LocalBackend.wrapper.exe in the archive is damaged." }
 if ((Get-Sha256 $patchSpacewar) -ne $expectSpacewar) { throw "steam_api64.spacewar.dll in the archive is damaged." }
+if ((Get-Sha256 $patchValve) -ne $expectValve) { throw "steam_api64.valve.dll in the archive is damaged." }
 
 function Find-InstallRoot([string]$Given) {
   if ($Given) {
@@ -80,7 +85,36 @@ $shim = Join-Path $shims 'PartyWin.dll'
 $buildJson = Join-Path $shims 'build.json'
 $engineJson = Join-Path $root 'app\engine.json'
 $gameDll = Join-Path $root 'game\bin\PartyWin.dll'
+$gameSteamApi = Join-Path $root 'game\bin\steam_api64.dll'
 $scripts = Join-Path $root 'app\scripts'
+
+function Repair-GameSteamApi([string]$BackupDir) {
+  $bin = Split-Path -Parent $gameSteamApi
+  if (-not (Test-Path $bin)) {
+    Write-Warn "No game\bin yet. Skip Valve steam_api64 repair (copy game\ first, then re-run INSTALL.cmd)."
+    return
+  }
+  $ok = (Test-Path $gameSteamApi) -and
+    ((Get-Item $gameSteamApi).Length -eq $expectValveSize) -and
+    ((Get-Sha256 $gameSteamApi) -eq $expectValve)
+  if ($ok) {
+    Write-Ok "game\bin\steam_api64.dll is already the Valve build DLL (HellForge gameCopy)."
+    return
+  }
+  if (Test-Path $gameSteamApi) {
+    $badName = 'steam_api64.dll.wrong-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    if ($BackupDir) { Copy-Item $gameSteamApi (Join-Path $BackupDir $badName) -Force }
+    Write-Warn ("game\bin\steam_api64.dll is wrong size/hash (often GSE/online-fix). Restoring Valve DLL. Was " +
+      (Get-Item $gameSteamApi).Length + " bytes; need " + $expectValveSize + ".")
+  } else {
+    Write-Step "game\bin\steam_api64.dll missing. Installing Valve DLL for build 25480438."
+  }
+  Copy-Item $patchValve $gameSteamApi -Force
+  if ((Get-Item $gameSteamApi).Length -ne $expectValveSize -or (Get-Sha256 $gameSteamApi) -ne $expectValve) {
+    throw "Failed to write game\bin\steam_api64.dll from steam_api64.valve.dll."
+  }
+  Write-Ok "Restored game\bin\steam_api64.dll (Valve). Re-check: app\cli\HellForge.Cli.exe status -> gameCopy."
+}
 
 Write-Step "Game folder: $root"
 if (-not (Test-Path (Join-Path $root 'HellForge.exe'))) {
@@ -116,16 +150,20 @@ $already = $hasReal -and $wrapperIsSmall -and
   ((Get-Sha256 $wrapper) -eq $expectWrapper) -and
   ((Get-Sha256 $shim) -eq $expectDll) -and
   $spacewarOk
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$backup = Join-Path $backend "backups\party-voice-$stamp"
+
 if ($already) {
   $bj = Get-Content $buildJson -Raw | ConvertFrom-Json
   if ([string]$bj.standIns.'PartyWin.dll' -eq $expectDll) {
-    Write-Ok "Patch already installed. Nothing to copy."
+    Write-Ok "Backend / PartyWin patch already installed."
+    New-Item -ItemType Directory -Force -Path $backup | Out-Null
+    Repair-GameSteamApi $backup
+    Write-Ok "Done (repair-only pass). Rollback folder if steam_api was replaced: $backup"
     exit 0
   }
 }
 
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$backup = Join-Path $backend "backups\party-voice-$stamp"
 New-Item -ItemType Directory -Force -Path $backup | Out-Null
 if ($hasReal) { Copy-Item $real (Join-Path $backup 'HellForge.LocalBackend.real.exe') -Force }
 if ($hasWrapperPath) { Copy-Item $wrapper (Join-Path $backup 'HellForge.LocalBackend.exe') -Force }
@@ -134,7 +172,7 @@ Copy-Item $shim (Join-Path $backup 'PartyWin.dll') -Force
 Copy-Item $buildJson (Join-Path $backup 'build.json') -Force
 if (Test-Path $engineJson) { Copy-Item $engineJson (Join-Path $backup 'engine.json') -Force }
 $rollback = @"
-Files from before the party-voice install.
+Files from before the Local Co-op install.
 Copy them back to undo:
   HellForge.LocalBackend.real.exe -> app\backend\   (if present in this backup)
   HellForge.LocalBackend.exe -> app\backend\
@@ -142,6 +180,7 @@ Copy them back to undo:
   PartyWin.dll -> app\sdk-shims\
   build.json -> app\sdk-shims\
   engine.json -> app\
+  steam_api64.dll.wrong-* was the previous game\bin\steam_api64.dll (if present)
 "@
 Set-Content -Path (Join-Path $backup 'ROLLBACK.txt') -Encoding ASCII -Value $rollback
 Write-Ok "Old files: $backup"
@@ -205,8 +244,11 @@ if (Test-Path $engineJson) {
   Set-Content -Path $engineJson -Value $ej.TrimEnd() -Encoding utf8
 }
 
+Repair-GameSteamApi $backup
+
 Write-Host ""
 Write-Ok "Done."
 Write-Host "  Start with HellForge-Portable.cmd when you have no HD2 license (Spacewar 480)."
 Write-Host "  Voice is the in-game button. Every squad member needs this same archive."
+Write-Host "  If HellForge said gameCopy:false for steam_api size, INSTALL.cmd now restores Valve DLL in game\bin."
 Write-Host "  Rollback: $backup"

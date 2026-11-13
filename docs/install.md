@@ -16,6 +16,7 @@ The installer does **not** upgrade HellForge (e.g. 0.2.0 → 0.4). It only patch
 - `app\backend\HellForge.LocalBackend.exe` — small wrapper (created if you still have a stock single-exe layout)  
 - `app\backend\steam_api64.spacewar.dll` — used by the wrapper for steam-link  
 - `app\sdk-shims\PartyWin.dll` — voice-capable Party stand-in  
+- `game\bin\steam_api64.dll` — restored to Valve size for build **25480438** when a GSE/online-fix DLL broke `gameCopy`  
 - hashes in `app\sdk-shims\build.json` and `app\engine.json`  
 - optional `app\scripts\skip-steam-check.enabled` + ownership script for portable installs  
 

@@ -6,9 +6,9 @@ When cutting a new build: update “Current” and add a version block at the to
 
 Archive: HellForge-LocalCoop_vN.zip
 
-Current: v20
+Current: v21
 ------------
-Backend (exe): same as v19
+Backend (exe): same as v19/v20
   SHA256 HellForge.LocalBackend.real.exe =
     3CC72BC7EDA3F70160821A95D3CEE108114B32134A19696FD476A9D4FE6FEF23
 PartyWin (voice stand-in): same as v12+
@@ -17,6 +17,9 @@ PartyWin (voice stand-in): same as v12+
 Wrapper:
   SHA256 HellForge.LocalBackend.wrapper.exe =
     1D93A4290191ECB62176C7BF2970CEE5270EEA60C6CD35DA7DFC9F2D05E3F853
+Valve steam_api (game\bin, build 25480438):
+  SHA256 steam_api64.valve.dll =
+    1DB3FD414039D3E5815A5721925DD2E0A3A9F2549603C6CAB7C49B84966A1AF3
 
 Current backend behaviour
   - Squad voice (PartyWin + LocalBackend party.voice; Opus/RNNoise)
@@ -29,6 +32,10 @@ Current backend behaviour
   - Sample share: fall back to the host pool; log sample units
   - Superstore: /StoreFront/rotation and /StoreFront/{id}; buys spend Forge Credits
   - Pickup share: medal / requisition / Forge Credit piles in the lobby
+
+Installer (v21)
+  - Same as v20, plus restores game\bin\steam_api64.dll when GSE/wrong size breaks HellForge gameCopy
+  - Ships steam_api64.valve.dll (298384 bytes, build 25480438)
 
 Installer (v20)
   - Installs real + thin wrapper + steam_api64.spacewar.dll (Spacewar 480)
@@ -45,6 +52,9 @@ Limits
 
 History
 -------
+v21  (2026-11-13)
+  Installer restores Valve game\bin\steam_api64.dll (fixes gameCopy:false after GSE/online-fix).
+
 v20  (2026-11-12)
   Installer: real/wrapper/Spacewar + voice on 0.2.0 stock and portable 0.4.
   Backend same as v19.

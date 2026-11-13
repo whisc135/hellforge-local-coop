@@ -34,13 +34,20 @@ Ok "Apply-LocalCoop.ps1 parses"
 
 $applyText = Get-Content $apply -Raw
 $expect = @{}
-foreach ($name in @('expectExe', 'expectDll', 'expectWrapper', 'expectSpacewar')) {
+foreach ($name in @('expectExe', 'expectDll', 'expectWrapper', 'expectSpacewar', 'expectValve')) {
   if ($applyText -notmatch ("\`$$name\s*=\s*'([A-Fa-f0-9]{64})'")) {
     Fail "Apply-LocalCoop.ps1 missing $name SHA-256"
   }
   $expect[$name] = $Matches[1].ToUpperInvariant()
 }
-Ok "Apply-LocalCoop.ps1 has four SHA-256 pins"
+Ok "Apply-LocalCoop.ps1 has five SHA-256 pins"
+$valve = Join-Path $RepoRoot 'install\steam_api64.valve.dll'
+if (-not (Test-Path $valve)) { Fail "Missing install\steam_api64.valve.dll" }
+$valveHash = (Get-FileHash -Algorithm SHA256 $valve).Hash.ToUpperInvariant()
+if ($valveHash -ne $expect['expectValve']) {
+  Fail "install\steam_api64.valve.dll hash ($valveHash) != expectValve ($($expect['expectValve']))"
+}
+Ok "steam_api64.valve.dll matches expectValve"
 
 $feat = Get-Content $features -Raw
 $featHashes = [regex]::Matches($feat, '(?im)SHA256[^\r\n]*=\s*([A-Fa-f0-9]{64})') |
