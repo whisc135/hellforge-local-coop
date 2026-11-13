@@ -1,5 +1,7 @@
-# Seed binaries
+# Seed release assets
 
-`PartyWin.dll` and `steam_api64.spacewar.dll` for the **first** GitHub Release when no prior release zip exists yet.
+Put `HellForge-LocalCoop_vN.zip` (+ `.sha256`) here before pushing tag `vN`.
 
-Later releases prefer these files from the previous `HellForge-LocalCoop_vN.zip` asset instead.
+The **Release** workflow uploads that zip to GitHub Releases (no NativeAOT rebuild on the runner).
+
+Also kept here for bootstrap: `PartyWin.dll` and `steam_api64.spacewar.dll`.

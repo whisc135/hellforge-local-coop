@@ -24,6 +24,8 @@ payload/
 
 # Keep scripts; ignore accidental binary drops
 *.zip
+!seed/HellForge-LocalCoop_*.zip
+!seed/HellForge-LocalCoop_*.zip.sha256
 !docs/**
 
 # Local CI checkout

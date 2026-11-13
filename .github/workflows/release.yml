@@ -49,11 +49,12 @@ jobs:
     name: release
     runs-on: windows-latest
     needs: [validate, test]
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Resolve version
         id: ver
@@ -68,88 +69,21 @@ jobs:
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Release version $v"
 
-      - name: Cache HellForge upstream clone
-        uses: actions/cache@v4
-        with:
-          path: .upstream
-          key: hellforge-${{ hashFiles('UPSTREAM.lock') }}
-          restore-keys: |
-            hellforge-
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: Prepare HellForge + overlay
-        shell: pwsh
-        run: ./scripts/Invoke-CiTests.ps1 -KeepUpstream -SkipTests
-
-      - name: Fetch PartyWin + Spacewar
+      - name: Publish seed zip as GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path payload | Out-Null
-          $this = '${{ steps.ver.outputs.version }}'
-          $tags = @(gh release list -L 20 --json tagName -q '.[].tagName' 2>$null)
-          $prior = ($tags | Where-Object { $_ -and ($_ -ne $this) } | Select-Object -First 1)
-          if ($prior) {
-            Write-Host "Using binaries from release $prior"
-            New-Item -ItemType Directory -Force -Path prev | Out-Null
-            gh release download $prior -p 'HellForge-LocalCoop_*.zip' -D prev --clobber
-            $zip = Get-ChildItem prev -Filter 'HellForge-LocalCoop_*.zip' | Select-Object -First 1
-            if (-not $zip) { throw "Prior release zip missing" }
-            Expand-Archive $zip.FullName -DestinationPath prev\unpack -Force
-            Copy-Item prev\unpack\PartyWin.dll payload\ -Force
-            Copy-Item prev\unpack\steam_api64.spacewar.dll payload\ -Force
-          } else {
-            Write-Host "No prior release — using seed/ PartyWin + Spacewar"
-            foreach ($name in @('PartyWin.dll', 'steam_api64.spacewar.dll')) {
-              $p = Join-Path 'seed' $name
-              if (-not (Test-Path $p)) { throw "Missing $p (needed for the first release)" }
-              Copy-Item $p payload\ -Force
-            }
+          $v = '${{ steps.ver.outputs.version }}'
+          $zip = Join-Path 'seed' "HellForge-LocalCoop_$v.zip"
+          $sum = "$zip.sha256"
+          if (-not (Test-Path $zip)) {
+            throw "Missing $zip — put the release archive in seed/ before tagging $v"
           }
-
-      - name: Publish LocalBackend (NativeAOT)
-        shell: pwsh
-        run: |
-          $proj = Join-Path $PWD '.upstream\HellForge\src\HellForge.LocalBackend\HellForge.LocalBackend.csproj'
-          if (-not (Test-Path $proj)) { throw "Missing $proj — prepare step failed" }
-          $out = Join-Path $PWD 'publish-backend'
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
-          dotnet publish $proj -c Release -r win-x64 --self-contained true -o $out `
-            -p:NuGetAudit=false -p:PublishAot=true
-          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
-          $exe = Join-Path $out 'HellForge.LocalBackend.exe'
-          if (-not (Test-Path $exe)) { throw "Publish output missing HellForge.LocalBackend.exe" }
-          Copy-Item $exe payload\HellForge.LocalBackend.real.exe -Force
-
-      - name: Compile wrapper
-        shell: pwsh
-        run: |
-          $src = Join-Path $PWD 'src\wrapper\HellForgeBackendWrapper.cs'
-          $out = Join-Path $PWD 'payload\HellForge.LocalBackend.wrapper.exe'
-          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-          if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc" }
-          & $csc /nologo /optimize+ /target:exe /out:$out $src
-          if ($LASTEXITCODE -ne 0) { throw "csc failed: $LASTEXITCODE" }
-
-      - name: Pack release zip
-        shell: pwsh
-        run: |
-          $v = '${{ steps.ver.outputs.version }}'
-          ./scripts/Build-ReleaseZip.ps1 -PayloadDir .\payload -Version $v -OutDir .\artifacts
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $v = '${{ steps.ver.outputs.version }}'
-          $zip = Get-ChildItem artifacts -Filter "HellForge-LocalCoop_$v.zip" | Select-Object -First 1
-          $sum = Get-ChildItem artifacts -Filter "HellForge-LocalCoop_$v.zip.sha256" | Select-Object -First 1
-          if (-not $zip) { throw "Zip missing" }
+          if (-not (Test-Path $sum)) {
+            $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash
+            Set-Content -Path $sum -Value "$hash  $(Split-Path $zip -Leaf)" -Encoding ASCII
+          }
           $notes = @"
           HellForge Local Co-op **$v**
 
@@ -158,8 +92,13 @@ jobs:
           3. Prefer ``HellForge-Portable.cmd`` for Spacewar peer-link.
           4. Same **$v** on every squad PC.
 
-          SHA-256 of the zip is in the ``.sha256`` asset. Installer pins for the four binaries are rewritten into ``Apply-LocalCoop.ps1`` at pack time.
+          SHA-256 is in the ``.sha256`` asset.
           "@
+          # Retag / recreate is fine for the same version after a failed run
+          $existing = gh release view $v 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $v --yes
+          }
           $remoteTag = git ls-remote --tags origin "refs/tags/$v"
           if (-not $remoteTag) {
             git config user.name "github-actions[bot]"
@@ -167,4 +106,4 @@ jobs:
             git tag $v
             git push origin $v
           }
-          gh release create $v $zip.FullName $sum.FullName --title "HellForge Local Co-op $v" --notes $notes
+          gh release create $v $zip $sum --title "HellForge Local Co-op $v" --notes $notes
