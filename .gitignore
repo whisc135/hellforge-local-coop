@@ -35,3 +35,7 @@ payload/
 payload/
 artifacts/
 
+
+# optional local unpack leftovers
+_seed_unpack/
+
