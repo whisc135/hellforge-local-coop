@@ -17,6 +17,8 @@ payload/
 *.exe
 *.dll
 !install/*.cmd
+!seed/*.dll
+!seed/*.DLL
 
 # Keep scripts; ignore accidental binary drops
 *.zip
