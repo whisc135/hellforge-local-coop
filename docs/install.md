@@ -8,6 +8,8 @@
 4. Run `INSTALL.cmd`.
 5. Prefer `HellForge-Portable.cmd` when you use Steam AppId **480** for the backend peer link.
 
+The installer does **not** upgrade HellForge (e.g. 0.2.0 → 0.4). It only patches LocalBackend / PartyWin / related helpers on top of whatever HellForge version you already have. Stock **0.2.0** stays **0.2.0** in the UI; that is expected.
+
 ### What gets replaced
 
 - `app\backend\HellForge.LocalBackend.real.exe` — patched LocalBackend  

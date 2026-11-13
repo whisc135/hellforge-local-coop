@@ -19,11 +19,13 @@ Without this patch, HellForge’s LocalBackend often only sees `Mission/end` on 
 
 ## Quick start
 
-1. Install / update **HellForge**.
+1. Install / update **HellForge** to the version you want (this patch does **not** bump HellForge itself).
 2. Download `HellForge-LocalCoop_vN.zip` from [Releases](../../releases).
 3. Close the game and HellForge → run `INSTALL.cmd`.
 4. Prefer `HellForge-Portable.cmd` → PLAY when using the Spacewar (480) peer-link setup.
 5. **Same release on every machine** in the lobby.
+
+This zip only patches LocalBackend / PartyWin / Spacewar helpers. If you installed HellForge **0.2.0**, the UI will still show **0.2.0** after `INSTALL.cmd` — that is expected. To run **0.4**, update HellForge first, then apply the patch again.
 
 Installer backups go under `app\backend\backups\`. Profiles are not wiped.
 
@@ -32,7 +34,7 @@ More detail: [docs/install.md](docs/install.md) · changelog: [FEATURES.txt](FEA
 ## Requirements
 
 - Windows 10/11, Steam signed in  
-- Working HellForge install (portable **0.4** recommended; stock **0.2.0** backend layout supported)  
+- Working HellForge install (portable **0.4** recommended; stock **0.2.0** backend layout supported — not upgraded in place)  
 - Same patch build for the whole squad  
 
 ## For developers
