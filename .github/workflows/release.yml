@@ -84,23 +84,32 @@ jobs:
         shell: pwsh
         run: ./scripts/Invoke-CiTests.ps1 -KeepUpstream -SkipTests
 
-      - name: Fetch PartyWin + Spacewar from prior release
+      - name: Fetch PartyWin + Spacewar
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path payload | Out-Null
           $this = '${{ steps.ver.outputs.version }}'
-          $tags = gh release list -L 20 --json tagName -q '.[].tagName'
-          $prior = ($tags | Where-Object { $_ -ne $this } | Select-Object -First 1)
-          if (-not $prior) { throw "No prior GitHub Release to pull PartyWin/spacewar from." }
-          Write-Host "Using binaries from release $prior"
-          New-Item -ItemType Directory -Force -Path prev, payload | Out-Null
-          gh release download $prior -p 'HellForge-LocalCoop_*.zip' -D prev --clobber
-          $zip = Get-ChildItem prev -Filter 'HellForge-LocalCoop_*.zip' | Select-Object -First 1
-          if (-not $zip) { throw "Prior release zip missing" }
-          Expand-Archive $zip.FullName -DestinationPath prev\unpack -Force
-          Copy-Item prev\unpack\PartyWin.dll payload\ -Force
-          Copy-Item prev\unpack\steam_api64.spacewar.dll payload\ -Force
+          $tags = @(gh release list -L 20 --json tagName -q '.[].tagName' 2>$null)
+          $prior = ($tags | Where-Object { $_ -and ($_ -ne $this) } | Select-Object -First 1)
+          if ($prior) {
+            Write-Host "Using binaries from release $prior"
+            New-Item -ItemType Directory -Force -Path prev | Out-Null
+            gh release download $prior -p 'HellForge-LocalCoop_*.zip' -D prev --clobber
+            $zip = Get-ChildItem prev -Filter 'HellForge-LocalCoop_*.zip' | Select-Object -First 1
+            if (-not $zip) { throw "Prior release zip missing" }
+            Expand-Archive $zip.FullName -DestinationPath prev\unpack -Force
+            Copy-Item prev\unpack\PartyWin.dll payload\ -Force
+            Copy-Item prev\unpack\steam_api64.spacewar.dll payload\ -Force
+          } else {
+            Write-Host "No prior release — using seed/ PartyWin + Spacewar"
+            foreach ($name in @('PartyWin.dll', 'steam_api64.spacewar.dll')) {
+              $p = Join-Path 'seed' $name
+              if (-not (Test-Path $p)) { throw "Missing $p (needed for the first release)" }
+              Copy-Item $p payload\ -Force
+            }
+          }
 
       - name: Publish LocalBackend (NativeAOT)
         shell: pwsh
